@@ -1,0 +1,9 @@
+{
+  "year": 2025,
+  "expected_symbols": 100,
+  "universe_file": "universe.csv",
+  "universe_as_of": null,
+  "universe_source": null,
+  "output_dir": "data",
+  "request_interval_seconds": 0.5
+}
