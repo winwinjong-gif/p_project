@@ -2,7 +2,7 @@
 
 2025년 1월 2일 기준 코스피100 종목을 대상으로 KRX 일별 시세와 OpenDART 연간 재무제표를 수집합니다. 기본 시세 기간은 2021~2025년입니다.
 
-`collect_design.py`가 수집을 실행하며, `collector.py`의 API 요청 및 OpenDART 법인코드 조회 기능을 사용합니다. `schema.sql`은 PostgreSQL 테이블 초안이며 DB에 자동 적재하지 않습니다.
+`collect_design.py`가 API 요청, 법인코드 조회와 수집을 수행합니다. `schema.sql`은 PostgreSQL 테이블 초안이며 DB에 자동 적재하지 않습니다.
 
 Python 3.12 이상이 필요하며 추가 패키지는 없습니다. KRX 공식 구성종목 CSV와 거래일 CSV를 준비하고 `KRX_API_KEY`, `DART_API_KEY` 환경변수를 설정하세요. 인증키는 저장소에 올리지 않습니다.
 

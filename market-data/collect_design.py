@@ -9,11 +9,17 @@ import os  # 환경변수에서 API 키를 읽는다.
 from pathlib import Path  # 파일과 폴더 경로를 다룬다.
 import re  # 키와 종목코드의 형식을 확인한다.
 import sys  # 실행 성공이나 실패를 운영체제에 알린다.
-
-import collector as legacy  # 기존 코드의 API 요청과 법인코드 조회를 재사용한다.
+import time  # API 요청 간격과 재시도 대기시간을 둔다.
+import urllib.error  # HTTP 오류를 확인한다.
+import urllib.parse  # API 요청값을 URL 형식으로 변환한다.
+import urllib.request  # API에 요청을 보낸다.
+import xml.etree.ElementTree as ET  # OpenDART 법인코드 XML을 읽는다.
+import zipfile  # OpenDART 법인코드 압축파일을 읽는다.
 
 # KRX 주소, 고정 종목 기준일, 정리된 가격 파일의 열 순서
 KRX = 'https://data-dbg.krx.co.kr/svc/apis/sto/stk_bydd_trd'
+DART = 'https://opendart.fss.or.kr/api/'
+BASE = Path(__file__).resolve().parent
 AS_OF = '2025-01-02'
 FIELDS = ('code', 'date', 'open', 'high', 'low', 'close', 'volume', 'source', 'price_basis', 'collected_at')
 
@@ -39,6 +45,45 @@ def atomic_bytes(path, data):
     tmp = path.with_suffix(path.suffix + '.tmp')
     tmp.write_bytes(data)
     tmp.replace(path)
+
+
+# 실행 기록을 JSON으로 저장한다.
+def write_json(path, value):
+    data = json.dumps(value, ensure_ascii=False, indent=2).encode('utf-8')
+    atomic_bytes(path, data)
+
+
+# 일시적인 통신 오류는 재시도한다. API 키가 포함된 URL은 출력하지 않는다.
+def request(url, params, interval, headers=None):
+    for attempt in range(4):
+        time.sleep(interval)
+        try:
+            url_with_params = url + '?' + urllib.parse.urlencode(params)
+            request_headers = {'User-Agent': 'MoneyRehearsalResearch/0.1', **(headers or {})}
+            req = urllib.request.Request(url_with_params, headers=request_headers)
+            with urllib.request.urlopen(req, timeout=45) as response:
+                return response.read()
+        except urllib.error.HTTPError as exc:
+            if exc.code not in (429, 500, 502, 503, 504):
+                raise RuntimeError(f'HTTP {exc.code}') from None
+        except (urllib.error.URLError, TimeoutError):
+            pass
+        time.sleep(2 ** attempt)
+    raise RuntimeError('Network request failed after 4 attempts')
+
+
+# 종목코드를 OpenDART 법인코드에 연결한다.
+def corp_mapping(root, key, interval, refresh):
+    path = root / 'raw' / 'dart' / 'corpCode.zip'
+    if refresh or not path.exists():
+        payload = request(DART + 'corpCode.xml', {'crtfc_key': key}, interval)
+        if not zipfile.is_zipfile(io.BytesIO(payload)):
+            raise RuntimeError('DART corpCode request did not return a ZIP file')
+        atomic_bytes(path, payload)
+    with zipfile.ZipFile(path) as archive:
+        tree = ET.fromstring(archive.read('CORPCODE.xml'))
+    return {node.findtext('stock_code').strip(): node.findtext('corp_code')
+            for node in tree.findall('list') if node.findtext('stock_code', '').strip()}
 
 
 # 행 목록을 CSV 형식으로 변환한다.
@@ -132,7 +177,7 @@ def collect_day(day, symbols, root, key, refresh):
         if hashlib.sha256(payload).hexdigest() != meta['sha256']:
             raise ValueError('KRX raw checksum mismatch')
     else:
-        payload = legacy.request(KRX, {'basDd': day.strftime('%Y%m%d')}, 0.3, {'AUTH_KEY': key})
+        payload = request(KRX, {'basDd': day.strftime('%Y%m%d')}, 0.3, {'AUTH_KEY': key})
         digest = hashlib.sha256(payload).hexdigest()
         rel = Path('raw/krx') / str(day.year) / stem / f'{digest}.json'
         atomic_bytes(root / rel, payload)
@@ -140,7 +185,7 @@ def collect_day(day, symbols, root, key, refresh):
                     collected_at=dt.datetime.now(dt.timezone.utc).isoformat())
     rows, issues, missing = parse_krx(payload, day, symbols, meta['collected_at'])
     if rows and not issues and not missing:
-        legacy.write_json(cache, meta)
+        write_json(cache, meta)
     return rows, issues, missing, meta
 
 
@@ -154,7 +199,7 @@ def annual(code, corp, year, root, key, refresh):
             if hashlib.sha256(payload).hexdigest() != meta['sha256']:
                 raise ValueError('OpenDART raw checksum mismatch')
         else:
-            payload = legacy.request(legacy.DART + 'fnlttSinglAcntAll.json', dict(
+            payload = request(DART + 'fnlttSinglAcntAll.json', dict(
                 crtfc_key=key, corp_code=corp, bsns_year=year, reprt_code='11011', fs_div=scope), 0.3)
         response = json.loads(payload)
         if response.get('status') == '013':  # 자료 없음. 다른 재무제표 구분을 확인한다.
@@ -173,7 +218,7 @@ def annual(code, corp, year, root, key, refresh):
         fields = sorted({k for row in rows for k in row})
         atomic_bytes(root / 'annual' / code / str(year) / f'{receipt}-{scope}.csv',
                      csv_bytes([{k: row.get(k, '') for k in fields} for row in rows], fields))
-        legacy.write_json(cache, meta)
+        write_json(cache, meta)
         return dict(meta, rows=len(rows), status='collected', vintage='latest_available')
     return dict(status='no_data')
 
@@ -188,7 +233,7 @@ def main():
     cli.add_argument('--start', default='2021-01-01', type=dt.date.fromisoformat)
     cli.add_argument('--end', default='2025-12-31', type=dt.date.fromisoformat)
     cli.add_argument('--first-financial-year', type=int, default=2019)
-    cli.add_argument('--output', type=Path, default=legacy.BASE / 'data' / 'final-design')
+    cli.add_argument('--output', type=Path, default=BASE / 'data' / 'final-design')
     cli.add_argument('--refresh', action='store_true')
     args = cli.parse_args()
     if args.start > args.end or args.first_financial_year > args.end.year:
@@ -209,7 +254,7 @@ def main():
     if args.kind == 'prices':
         work = [(day,) for day in trading_dates(args.calendar, args.start, args.end)]
     else:
-        mapping = legacy.corp_mapping(root, key, 0.3, args.refresh)
+        mapping = corp_mapping(root, key, 0.3, args.refresh)
         work = [(code, year) for code in sorted(symbols)
                 for year in range(args.first_financial_year, args.end.year + 1)]
     log_time = dt.datetime.now(dt.timezone.utc)
@@ -231,7 +276,7 @@ def main():
         except (ValueError, KeyError, TypeError, RuntimeError, OSError) as exc:
             result.update(status='error', error=str(exc))
         report['results'].append(result)
-        legacy.write_json(log, report)
+        write_json(log, report)
         if result.get('error') in ('HTTP 401', 'HTTP 403', 'OpenDART status 010', 'OpenDART status 011', 'OpenDART status 012', 'OpenDART status 020'):
             break
     # 성공·누락·오류 건수와 저장 용량을 실행 보고서에 남긴다.
@@ -240,7 +285,7 @@ def main():
                   rows=sum(r.get('rows', 0) for r in report['results']),
                   bytes_by_folder={folder: sum(f.stat().st_size for f in (root / folder).rglob('*') if f.is_file())
                                    for folder in ('raw', 'prices', 'annual')})
-    legacy.write_json(log, report)
+    write_json(log, report)
     print(log, counts)
     return 2 if any(counts[s] for s in ('partial', 'no_data', 'error')) else 0
 

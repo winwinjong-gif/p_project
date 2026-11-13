@@ -1,8 +1,10 @@
 import datetime as dt
 import json
 from unittest import TestCase
+from unittest.mock import patch
+from pathlib import Path
 
-from collect_design import parse_krx
+from collect_design import annual, parse_krx
 
 
 class KRXTests(TestCase):
@@ -30,3 +32,22 @@ class KRXTests(TestCase):
     def test_wrong_date_is_not_cached_as_holiday(self):
         with self.assertRaises(ValueError):
             self.parse(BAS_DD='20250103')
+
+
+class DARTTests(TestCase):
+    def test_fallback_to_separate_when_consolidated_missing(self):
+        missing = json.dumps({'status': '013'}).encode()
+        good = json.dumps({'status': '000', 'list': [
+            {'rcept_no': '20260301000001', 'thstrm_amount': '10'}]}).encode()
+        with patch('collect_design.request', side_effect=[missing, good]) as mock_request, \
+             patch('collect_design.atomic_bytes'), patch('collect_design.write_json'):
+            result = annual('005930', '00126380', 2025, Path('unused'), 'key', True)
+        self.assertEqual(result['scope'], 'OFS')
+        self.assertEqual(mock_request.call_count, 2)
+
+    def test_auth_error_does_not_fallback(self):
+        bad = json.dumps({'status': '010'}).encode()
+        with patch('collect_design.request', return_value=bad) as mock_request:
+            with self.assertRaisesRegex(ValueError, '010'):
+                annual('005930', '00126380', 2025, Path('unused'), 'key', True)
+        self.assertEqual(mock_request.call_count, 1)
