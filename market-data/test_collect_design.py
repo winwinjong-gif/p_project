@@ -5,6 +5,7 @@ from unittest.mock import patch
 from pathlib import Path
 
 from collect_design import annual, parse_krx
+from auto_collect import disclosures
 
 
 class KRXTests(TestCase):
@@ -35,6 +36,20 @@ class KRXTests(TestCase):
 
 
 class DARTTests(TestCase):
+    def test_disclosures_fetches_all_pages_and_corrections(self):
+        first = json.dumps({'status': '000', 'total_page': 2, 'list': [{'rcept_no': '1'}]}).encode()
+        second = json.dumps({'status': '000', 'total_page': 2, 'list': [{'rcept_no': '2'}]}).encode()
+        with patch('auto_collect.request', side_effect=[first, second]) as mock_request:
+            items = disclosures('key', dt.date(2025, 1, 1), dt.date(2025, 1, 2))
+        self.assertEqual(len(items), 2)
+        self.assertEqual(mock_request.call_args_list[0].args[1]['last_reprt_at'], 'N')
+
+    def test_disclosures_rejects_missing_page(self):
+        first = json.dumps({'status': '000', 'total_page': 2, 'list': [{'rcept_no': '1'}]}).encode()
+        missing = json.dumps({'status': '013'}).encode()
+        with patch('auto_collect.request', side_effect=[first, missing]), self.assertRaises(ValueError):
+            disclosures('key', dt.date(2025, 1, 1), dt.date(2025, 1, 2))
+
     def test_fallback_to_separate_when_consolidated_missing(self):
         missing = json.dumps({'status': '013'}).encode()
         good = json.dumps({'status': '000', 'list': [
