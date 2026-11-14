@@ -6,6 +6,7 @@ from pathlib import Path
 
 from collect_design import annual, parse_krx
 from auto_collect import disclosures
+from filing_versions import next_trading_day, select_filing
 
 
 class KRXTests(TestCase):
@@ -36,6 +37,27 @@ class KRXTests(TestCase):
 
 
 class DARTTests(TestCase):
+    def test_version_selection_respects_publication_and_fiscal_year(self):
+        reports = [
+            dict(code='005930', receipt_no='20210301000001', business_year=2020,
+                 published_date='2021-03-01', available_date='2021-03-02'),
+            dict(code='005930', receipt_no='20210810000001', business_year=2020,
+                 published_date='2021-08-10', available_date='2021-08-11'),
+            dict(code='005930', receipt_no='20220301000001', business_year=2021,
+                 published_date='2022-03-01', available_date='2022-03-02'),
+            dict(code='005930', receipt_no='20220401000001', business_year=2020,
+                 published_date='2022-04-01', available_date='2022-04-04'),
+        ]
+        self.assertIsNone(select_filing(reports, '005930', dt.date(2021, 3, 1)))
+        self.assertEqual(select_filing(reports, '005930', dt.date(2021, 5, 1))['receipt_no'], '20210301000001')
+        self.assertEqual(select_filing(reports, '005930', dt.date(2021, 9, 1))['receipt_no'], '20210810000001')
+        self.assertEqual(select_filing(reports, '005930', dt.date(2022, 5, 1))['business_year'], 2021)
+
+    def test_next_trading_day_is_strictly_after_disclosure(self):
+        days = [dt.date(2025, 1, 3), dt.date(2025, 1, 6)]
+        self.assertEqual(next_trading_day(days[0], days), days[1])
+        self.assertIsNone(next_trading_day(days[1], days))
+
     def test_disclosures_fetches_all_pages_and_corrections(self):
         first = json.dumps({'status': '000', 'total_page': 2, 'list': [{'rcept_no': '1'}]}).encode()
         second = json.dumps({'status': '000', 'total_page': 2, 'list': [{'rcept_no': '2'}]}).encode()

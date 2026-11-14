@@ -42,6 +42,7 @@ def disclosures(key, start, end):
 
 # 매일 실행한다. 실패한 항목은 기록해 다음 실행에서 다시 시도한다.
 def main():
+    from filing_versions import save_filing  # 공시별 원본 파일을 보관한다.
     cli = argparse.ArgumentParser(description=__doc__)
     cli.add_argument('--universe', required=True, type=Path)
     cli.add_argument('--calendar', required=True, type=Path)
@@ -72,8 +73,8 @@ def main():
 
     # 과거 거래일도 매번 확인한다. 완전히 수집된 날짜는 원본 캐시를 사용한다.
     days = trading_dates(args.calendar, args.price_start, price_end)
-    calendar_dates = [dt.date.fromisoformat(row['date']) for row in csv.DictReader(
-        args.calendar.read_text(encoding='utf-8-sig').splitlines())]
+    calendar_dates = sorted(dt.date.fromisoformat(row['date']) for row in csv.DictReader(
+        args.calendar.read_text(encoding='utf-8-sig').splitlines()))
     if max(calendar_dates) < price_end - dt.timedelta(days=7):
         raise ValueError('거래일 목록이 최신이 아닙니다. 공식 목록을 갱신하세요.')
     for day in days:
@@ -115,12 +116,14 @@ def main():
             if not match:
                 raise ValueError('보고서에서 사업연도를 확인할 수 없음')
             code = codes[filing['corp_code']]
+            # 최신 수치 조회와 별개로 접수번호별 XBRL 원본을 먼저 보관한다.
+            original = save_filing(filing, code, keys['DART_API_KEY'], root, calendar_dates)
             result = annual(code, filing['corp_code'], int(match.group(1)), root, keys['DART_API_KEY'], True)
             if result['status'] != 'collected':
                 raise ValueError('재무제표가 아직 제공되지 않음')
             if result['receipt_no'] != receipt:
                 raise ValueError('최신 재무제표의 접수번호가 달라 해당 공시 버전 확인 필요')
-            state['completed'][receipt] = dict(filing=filing, financial=result)
+            state['completed'][receipt] = dict(filing=filing, financial=result, original=original)
             del state['pending'][receipt]
             write_json(state_path, state)
         except (RuntimeError, ValueError, KeyError, OSError) as exc:
