@@ -99,7 +99,7 @@ def main():
         found = disclosures(keys['DART_API_KEY'], cursor, end)
         for item in found:
             corp, receipt = item.get('corp_code'), item.get('rcept_no', '')
-            if corp not in codes:
+            if corp not in codes or '사업보고서' not in item.get('report_nm', ''):
                 continue
             if not re.fullmatch(r'\d{14}', receipt):
                 raise ValueError('공시 접수번호 형식 오류')

@@ -101,7 +101,7 @@ def main():
     while cursor <= args.end:
         end = min(args.end, cursor + dt.timedelta(days=60))
         for filing in disclosures(key, cursor, end):
-            if filing.get('corp_code') not in codes:
+            if filing.get('corp_code') not in codes or '사업보고서' not in filing.get('report_nm', ''):
                 continue
             try:
                 record = save_filing(filing, codes[filing['corp_code']], key, args.output, calendar)

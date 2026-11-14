@@ -1,5 +1,7 @@
 import datetime as dt
 import json
+import io
+import zipfile
 from unittest import TestCase
 from unittest.mock import patch
 from pathlib import Path
@@ -7,6 +9,7 @@ from pathlib import Path
 from collect_design import annual, parse_krx
 from auto_collect import disclosures
 from filing_versions import next_trading_day, select_filing
+from extract_xbrl import extract
 
 
 class KRXTests(TestCase):
@@ -37,6 +40,32 @@ class KRXTests(TestCase):
 
 
 class DARTTests(TestCase):
+    def test_xbrl_distinguishes_scope_and_disputes(self):
+        xml = '''<xbrl xmlns="http://www.xbrl.org/2003/instance"
+          xmlns:d="http://xbrl.org/2006/xbrldi" xmlns:f="http://xbrl.ifrs.org/taxonomy/2021-03-24/ifrs-full">
+          <context id="con"><entity><identifier scheme="x">1</identifier><segment>
+            <d:explicitMember dimension="f:ConsolidatedAndSeparateFinancialStatementsAxis">f:ConsolidatedMember</d:explicitMember>
+          </segment></entity><period><instant>2024-12-31</instant></period></context>
+          <context id="sub"><entity><identifier scheme="x">1</identifier><segment>
+            <d:explicitMember dimension="f:ConsolidatedAndSeparateFinancialStatementsAxis">f:ConsolidatedMember</d:explicitMember>
+            <d:explicitMember dimension="f:OtherAxis">f:OtherMember</d:explicitMember>
+          </segment></entity><period><instant>2024-12-31</instant></period></context>
+          <unit id="won"><measure>iso4217:KRW</measure></unit>
+          <f:Assets contextRef="con" unitRef="won">100</f:Assets>
+          <f:Assets contextRef="sub" unitRef="won">999</f:Assets>
+          <f:Equity contextRef="con" unitRef="won">20</f:Equity>
+          <f:Equity contextRef="con" unitRef="won">30</f:Equity>
+        </xbrl>'''
+        data = io.BytesIO()
+        with zipfile.ZipFile(data, 'w') as z:
+            z.writestr('test.xbrl', xml)
+        data.seek(0)
+        with patch('extract_xbrl.zipfile.ZipFile', return_value=zipfile.ZipFile(data)):
+            result = extract('unused.zip', dt.date(2024, 12, 31), 'CFS')
+        self.assertEqual(result['Assets']['amount'], '100')
+        self.assertEqual(result['Equity']['status'], 'conflict')
+        self.assertEqual(result['ProfitLoss']['status'], 'missing')
+
     def test_version_selection_respects_publication_and_fiscal_year(self):
         reports = [
             dict(code='005930', receipt_no='20210301000001', business_year=2020,
